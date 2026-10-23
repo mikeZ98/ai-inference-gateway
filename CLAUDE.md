@@ -26,8 +26,18 @@
 - All caches, virtualenvs and temp files live in `./.cache/` (pinned by `.envrc`):
   venv `./.cache/venv`, uv `./.cache/uv`, Python `./.cache/python`, plus ruff, mypy,
   pytest, coverage, pycache and `TMPDIR`. Never create `.venv/` or write caches elsewhere.
+- Docker data-root, images, volumes and BuildKit cache must live on `/Volumes/KINGSTONE_SSD`
+  (`COLIMA_HOME`/`BUILDX_CONFIG` via `.envrc`; see CONTRIBUTING.md). Never start a Docker
+  engine or VM whose storage is on the internal disk; ask first.
 - Run tools via `uv run …` (or the venv on `PATH` under direnv). Python 3.13.
 - Secrets only in `.env` (git-ignored). Never commit keys.
+
+## CI & merging
+
+- Never merge with the GitHub UI or `gh pr merge`: the committer becomes
+  `GitHub <noreply@github.com>` and the attribution audit fails. Use `git merge --ff-only` and push.
+- Actions are pinned to verified full SHAs, at least 7 days old and advisory-checked. Run `zizmor` and
+  `actionlint` on workflow changes.
 
 ## Commands
 
