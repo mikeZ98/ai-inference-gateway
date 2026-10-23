@@ -8,6 +8,8 @@ from ai_inference_gateway.schemas.cache import (
     CosineSimilarity,
     Embedding,
 )
+from ai_inference_gateway.schemas.errors import ErrorDetail, ErrorResponse, FieldError
+from ai_inference_gateway.schemas.health import ComponentCheck, HealthStatus
 from ai_inference_gateway.schemas.inference import (
     ComplexityAssessment,
     ComplexityTier,
@@ -22,6 +24,12 @@ from ai_inference_gateway.schemas.routing import (
     RouteTarget,
     RoutingTier,
 )
+from ai_inference_gateway.schemas.streaming import (
+    StreamDelta,
+    StreamError,
+    StreamEvent,
+    StreamSummary,
+)
 
 __all__ = [
     "DEFAULT_SIMILARITY_THRESHOLD",
@@ -31,13 +39,22 @@ __all__ = [
     "CacheQuery",
     "ComplexityAssessment",
     "ComplexityTier",
+    "ComponentCheck",
     "CosineSimilarity",
     "Embedding",
+    "ErrorDetail",
+    "ErrorResponse",
+    "FieldError",
+    "HealthStatus",
     "InferenceRequest",
     "InferenceResponse",
     "ModelProvider",
     "RouteTarget",
     "RoutingTier",
+    "StreamDelta",
+    "StreamError",
+    "StreamEvent",
+    "StreamSummary",
     "StrictModel",
     "TokenBucketStatus",
 ]

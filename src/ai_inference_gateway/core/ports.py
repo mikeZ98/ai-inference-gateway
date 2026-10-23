@@ -3,6 +3,7 @@
 Implementations must raise only :mod:`ai_inference_gateway.core.errors` types.
 """
 
+from collections.abc import AsyncGenerator
 from typing import Protocol
 
 from pydantic import Field
@@ -26,6 +27,23 @@ class ProviderCompletion(StrictModel):
     model_used: str = Field(min_length=1, max_length=128, pattern=MODEL_ID_PATTERN)
     provider: ModelProvider
     tokens_used: int = Field(ge=0)
+
+
+class TextDelta(StrictModel):
+    """A fragment of generated text from a streaming completion."""
+
+    text: str = Field(min_length=1)
+
+
+class StreamCompleted(StrictModel):
+    """Terminal event of a streaming completion; always the last event emitted."""
+
+    model_used: str = Field(min_length=1, max_length=128, pattern=MODEL_ID_PATTERN)
+    provider: ModelProvider
+    tokens_used: int = Field(ge=0)
+
+
+type ProviderStreamEvent = TextDelta | StreamCompleted
 
 
 class SemanticCache(Protocol):
@@ -65,4 +83,14 @@ class ProviderDispatcher(Protocol):
 
     async def complete(self, target: RouteTarget, request: InferenceRequest) -> ProviderCompletion:
         """Run the completion upstream."""
+        ...
+
+    def stream(
+        self, target: RouteTarget, request: InferenceRequest
+    ) -> AsyncGenerator[ProviderStreamEvent]:
+        """Stream the completion: zero or more ``TextDelta`` then one ``StreamCompleted``.
+
+        Implementations are async generators; closing the iterator must release
+        the upstream connection.
+        """
         ...

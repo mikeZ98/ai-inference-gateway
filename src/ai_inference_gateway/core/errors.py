@@ -39,3 +39,11 @@ class ProviderError(GatewayError):
         self.provider = provider
         self.status_code = status_code
         self.retryable = retryable
+
+
+class ModelNotAvailableError(RoutingError):
+    """The client requested a model this gateway does not serve."""
+
+
+class ProviderTimeoutError(ProviderError):
+    """The upstream provider did not answer within the configured timeout."""

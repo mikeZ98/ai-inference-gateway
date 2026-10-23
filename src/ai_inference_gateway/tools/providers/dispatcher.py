@@ -1,9 +1,10 @@
 """Registry-backed implementation of the core ``ProviderDispatcher`` port."""
 
-from collections.abc import Iterable
+from collections.abc import AsyncGenerator, Iterable
+from contextlib import aclosing
 
 from ai_inference_gateway.core.errors import RoutingError
-from ai_inference_gateway.core.ports import ProviderCompletion
+from ai_inference_gateway.core.ports import ProviderCompletion, ProviderStreamEvent
 from ai_inference_gateway.schemas import InferenceRequest, ModelProvider, RouteTarget
 from ai_inference_gateway.tools.providers.base import BaseProvider, normalize_base_url
 
@@ -55,4 +56,13 @@ class DynamicProviderDispatcher:
 
     async def complete(self, target: RouteTarget, request: InferenceRequest) -> ProviderCompletion:
         """Dispatch ``request`` to the adapter resolved for ``target``."""
-        return await self.resolve(target).complete(request=request, target=target)
+        return await self.resolve(target).complete(target, request)
+
+    async def stream(
+        self, target: RouteTarget, request: InferenceRequest
+    ) -> AsyncGenerator[ProviderStreamEvent]:
+        """Stream ``request`` through the adapter resolved for ``target``."""
+        adapter = self.resolve(target)
+        async with aclosing(adapter.stream(target, request)) as events:
+            async for event in events:
+                yield event

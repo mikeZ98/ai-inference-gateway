@@ -6,7 +6,7 @@ from typing import Self
 
 from pydantic import Field, model_validator
 
-from ai_inference_gateway.core.errors import RoutingError
+from ai_inference_gateway.core.errors import ModelNotAvailableError, RoutingError
 from ai_inference_gateway.schemas import (
     ComplexityAssessment,
     ComplexityTier,
@@ -80,7 +80,9 @@ class ComplexityRouter:
         if request.model is not None:
             target = self._catalog.get(request.model)
             if target is None:
-                raise RoutingError(f"model {request.model!r} is not available on this gateway")
+                raise ModelNotAvailableError(
+                    f"model {request.model!r} is not available on this gateway"
+                )
             return target
 
         config = self._config

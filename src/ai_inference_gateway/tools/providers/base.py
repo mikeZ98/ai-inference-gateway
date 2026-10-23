@@ -9,15 +9,20 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping
 from http import HTTPStatus
 from typing import Any, Final
 
 import httpx
 from pydantic import SecretStr
 
-from ai_inference_gateway.core.errors import ProviderError
-from ai_inference_gateway.core.ports import ProviderCompletion
+from ai_inference_gateway.core.errors import ProviderError, ProviderTimeoutError
+from ai_inference_gateway.core.ports import (
+    ProviderCompletion,
+    ProviderStreamEvent,
+    StreamCompleted,
+    TextDelta,
+)
 from ai_inference_gateway.schemas import InferenceRequest, ModelProvider, RouteTarget
 from ai_inference_gateway.schemas.inference import MODEL_ID_PATTERN
 
@@ -25,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S: Final = 60.0
 MAX_ERROR_DETAIL_CHARS: Final = 200
+MAX_MODEL_ID_CHARS: Final = 128
 
 _MODEL_ID_RE: Final = re.compile(MODEL_ID_PATTERN)
 # Generic credential shapes (sk-..., sk-ant-..., sk-or-v1-..., gsk_..., Bearer ...).
@@ -41,8 +47,42 @@ def normalize_base_url(url: str) -> str:
     return url.rstrip("/")
 
 
+async def iter_sse(lines: AsyncIterator[str]) -> AsyncGenerator[tuple[str | None, str]]:
+    """Minimal Server-Sent Events parser yielding ``(event, data)`` pairs."""
+    event: str | None = None
+    data: list[str] = []
+    async for line in lines:
+        if not line:
+            if data:
+                yield event, "\n".join(data)
+            event, data = None, []
+            continue
+        if line.startswith(":"):
+            continue
+        field, _, value = line.partition(":")
+        value = value.removeprefix(" ")
+        if field == "event":
+            event = value
+        elif field == "data":
+            data.append(value)
+    if data:
+        yield event, "\n".join(data)
+
+
+class StreamParser(ABC):
+    """Per-stream state machine turning upstream SSE events into domain events."""
+
+    @abstractmethod
+    def feed(self, event: str | None, data: str) -> Iterable[TextDelta]:
+        """Consume one SSE event; raise ``ProviderError`` on upstream error events."""
+
+    @abstractmethod
+    def finish(self) -> StreamCompleted:
+        """Return the terminal event; raise ``ProviderError`` if the stream was cut short."""
+
+
 class BaseProvider(ABC):
-    """Async provider adapter: ``complete(request, target) -> ProviderCompletion``."""
+    """Async provider adapter with ``complete(target, request)`` and ``stream(target, request)``."""
 
     def __init__(
         self,
@@ -76,15 +116,50 @@ class BaseProvider(ABC):
         """Normalized endpoint base URL."""
         return self._base_url
 
-    async def complete(self, request: InferenceRequest, target: RouteTarget) -> ProviderCompletion:
+    async def complete(self, target: RouteTarget, request: InferenceRequest) -> ProviderCompletion:
         """Run ``request`` against ``target.model`` and normalize the result."""
-        if target.provider is not self._provider:
-            raise ProviderError(
-                f"{self!r} cannot serve provider {target.provider.value!r}",
-                provider=target.provider,
+        self._check_target(target)
+        name = self._provider.value
+        # Transport errors are raised 'from None': httpx exceptions carry the
+        # request (incl. auth headers), which must never reach tracebacks/trackers.
+        try:
+            response = await self._client.post(
+                self._url(),
+                json=self._payload(request, target),
+                headers=self._headers(),
+                timeout=self._timeout_s,
             )
-        body = await self._post(self._path(), self._payload(request, target))
-        return self._parse(body, target)
+        except httpx.HTTPError as exc:
+            raise self._transport_error(exc) from None
+        if not response.is_success:
+            raise self._status_error(response.status_code, response.headers, response.content)
+        logger.debug("provider call succeeded", extra={"provider": name})
+        return self._parse(response.content, target)
+
+    async def stream(
+        self, target: RouteTarget, request: InferenceRequest
+    ) -> AsyncGenerator[ProviderStreamEvent]:
+        """Stream ``request``: ``TextDelta`` events then one ``StreamCompleted``.
+
+        The upstream response is opened in an ``async with`` block, so closing
+        this generator (client disconnect, cancellation) closes the connection.
+        """
+        self._check_target(target)
+        payload = {**self._payload(request, target), "stream": True}
+        try:
+            async with self._client.stream(
+                "POST", self._url(), json=payload, headers=self._headers(), timeout=self._timeout_s
+            ) as response:
+                if not response.is_success:
+                    body = await response.aread()
+                    raise self._status_error(response.status_code, response.headers, body)
+                parser = self._stream_parser(target)
+                async for event, data in iter_sse(response.aiter_lines()):
+                    for delta in parser.feed(event, data):
+                        yield delta
+                yield parser.finish()
+        except httpx.HTTPError as exc:
+            raise self._transport_error(exc) from None
 
     @abstractmethod
     def _path(self) -> str:
@@ -96,15 +171,32 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def _payload(self, request: InferenceRequest, target: RouteTarget) -> dict[str, Any]:
-        """JSON request body."""
+        """JSON request body (non-streaming form)."""
 
     @abstractmethod
     def _parse(self, body: bytes, target: RouteTarget) -> ProviderCompletion:
         """Translate a 2xx response body; raise ``ProviderError`` if unusable."""
 
+    @abstractmethod
+    def _stream_parser(self, target: RouteTarget) -> StreamParser:
+        """Fresh parser for one streaming response."""
+
+    def _url(self) -> str:
+        return f"{self._base_url}{self._path()}"
+
+    def _headers(self) -> dict[str, str]:
+        return {"content-type": "application/json", **self._auth_headers()}
+
+    def _check_target(self, target: RouteTarget) -> None:
+        if target.provider is not self._provider:
+            raise ProviderError(
+                f"{self!r} cannot serve provider {target.provider.value!r}",
+                provider=target.provider,
+            )
+
     def _resolve_model(self, reported: str | None, target: RouteTarget) -> str:
         """Prefer the model the provider reports (e.g. OpenRouter slugs) when well-formed."""
-        if reported and len(reported) <= 128 and _MODEL_ID_RE.fullmatch(reported):  # noqa: PLR2004
+        if reported and len(reported) <= MAX_MODEL_ID_CHARS and _MODEL_ID_RE.fullmatch(reported):
             return reported
         return target.model
 
@@ -118,48 +210,38 @@ class BaseProvider(ABC):
             retryable=retryable,
         )
 
-    async def _post(self, path: str, payload: dict[str, Any]) -> bytes:
+    def _transport_error(self, exc: httpx.HTTPError) -> ProviderError:
         name = self._provider.value
-        # Transport errors are raised 'from None': httpx exceptions carry the
-        # request (incl. auth headers), which must never reach tracebacks/trackers.
-        try:
-            response = await self._client.post(
-                f"{self._base_url}{path}",
-                json=payload,
-                headers={"content-type": "application/json", **self._auth_headers()},
-                timeout=self._timeout_s,
+        kind = type(exc).__name__
+        logger.warning("provider transport failure", extra={"provider": name, "error": kind})
+        if isinstance(exc, httpx.TimeoutException):
+            return ProviderTimeoutError(
+                f"{name}: request timed out ({kind})", provider=self._provider, retryable=True
             )
-        except httpx.TimeoutException:
-            raise self._error(f"{name}: request timed out", retryable=True) from None
-        except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
-            raise self._error(
-                f"{name}: connection failed ({type(exc).__name__})", retryable=True
-            ) from None
-        except httpx.HTTPError as exc:
-            raise self._error(f"{name}: transport error ({type(exc).__name__})") from None
+        if isinstance(exc, httpx.NetworkError | httpx.RemoteProtocolError):
+            return self._error(f"{name}: connection failed ({kind})", retryable=True)
+        return self._error(f"{name}: transport error ({kind})")
 
-        status = response.status_code
-        if response.is_success:
-            return response.content
-
-        detail = self._error_detail(response.content)
+    def _status_error(self, status: int, headers: httpx.Headers, body: bytes) -> ProviderError:
+        name = self._provider.value
         if status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
             message, retryable = f"{name}: authentication rejected (HTTP {status})", False
         elif status == HTTPStatus.TOO_MANY_REQUESTS:
-            retry_after = response.headers.get("retry-after", "unspecified")
+            retry_after = headers.get("retry-after", "unspecified")
             message = f"{name}: rate limited (HTTP 429, retry-after={retry_after})"
             retryable = True
         elif status >= HTTPStatus.INTERNAL_SERVER_ERROR or status in _RETRYABLE_STATUSES:
             message, retryable = f"{name}: upstream unavailable (HTTP {status})", True
         else:
             message, retryable = f"{name}: request rejected (HTTP {status})", False
+        detail = self._error_detail(body)
         if detail:
             message = f"{message}: {detail}"
         logger.warning(
             "provider call failed",
             extra={"provider": name, "status_code": status, "retryable": retryable},
         )
-        raise self._error(message, status_code=status, retryable=retryable)
+        return self._error(message, status_code=status, retryable=retryable)
 
     def _error_detail(self, body: bytes) -> str:
         """Best-effort short upstream error message (redacted, truncated)."""

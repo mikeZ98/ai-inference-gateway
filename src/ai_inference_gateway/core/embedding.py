@@ -102,7 +102,7 @@ class OpenAICompatibleEmbedder:
         client: httpx.AsyncClient,
         *,
         base_url: str,
-        api_key: SecretStr,
+        api_key: SecretStr | None,
         model: str,
         dimension: int,
         timeout_s: float = 10.0,
@@ -122,6 +122,11 @@ class OpenAICompatibleEmbedder:
         """Vector length produced by :meth:`embed`."""
         return self._dimension
 
+    def _headers(self) -> dict[str, str]:
+        if self._api_key is None:
+            return {}
+        return {"Authorization": f"Bearer {self._api_key.get_secret_value()}"}
+
     async def embed(self, text: str) -> Embedding:
         """Embed ``text`` via the remote endpoint."""
         # Transport errors are raised 'from None': httpx exceptions carry the
@@ -130,7 +135,7 @@ class OpenAICompatibleEmbedder:
             response = await self._client.post(
                 self._url,
                 json={"model": self._model, "input": text},
-                headers={"Authorization": f"Bearer {self._api_key.get_secret_value()}"},
+                headers=self._headers(),
                 timeout=self._timeout_s,
             )
             response.raise_for_status()

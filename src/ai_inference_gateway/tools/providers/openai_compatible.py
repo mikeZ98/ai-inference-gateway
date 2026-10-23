@@ -1,15 +1,16 @@
 """Universal adapter for OpenAI-format ``POST /chat/completions`` APIs."""
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 from typing import Annotated, Any, Final, NotRequired, TypedDict
 
 import httpx
 from pydantic import Field, SecretStr, TypeAdapter, ValidationError
 
-from ai_inference_gateway.core.ports import ProviderCompletion
+from ai_inference_gateway.core.errors import ProviderError
+from ai_inference_gateway.core.ports import ProviderCompletion, StreamCompleted, TextDelta
 from ai_inference_gateway.schemas import InferenceRequest, ModelProvider, RouteTarget
-from ai_inference_gateway.tools.providers.base import DEFAULT_TIMEOUT_S, BaseProvider
+from ai_inference_gateway.tools.providers.base import DEFAULT_TIMEOUT_S, BaseProvider, StreamParser
 from ai_inference_gateway.tools.providers.messages import to_transcript
 
 DEFAULT_BASE_URLS: Final[Mapping[ModelProvider, str]] = MappingProxyType(
@@ -47,6 +48,86 @@ class _ChatCompletion(TypedDict):
 
 
 _RESPONSE_ADAPTER: Final = TypeAdapter(_ChatCompletion)
+
+
+class _ChunkDelta(TypedDict, total=False):
+    content: str | None
+
+
+class _ChunkChoice(TypedDict, total=False):
+    delta: _ChunkDelta
+    finish_reason: str | None
+
+
+class _ChunkError(TypedDict, total=False):
+    message: str
+
+
+class _ChatCompletionChunk(TypedDict, total=False):
+    model: str
+    choices: list[_ChunkChoice]
+    usage: _Usage | None
+    error: _ChunkError
+
+
+_CHUNK_ADAPTER: Final = TypeAdapter(_ChatCompletionChunk)
+
+
+def _total_tokens(usage: _Usage) -> int:
+    total = usage.get("total_tokens")
+    if total is None:
+        total = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+    return max(0, total)
+
+
+class _OpenAIStreamParser(StreamParser):
+    """Parses ``chat.completion.chunk`` events terminated by ``[DONE]``."""
+
+    def __init__(self, adapter: "OpenAICompatibleProvider", target: RouteTarget) -> None:
+        self._adapter = adapter
+        self._target = target
+        self._model: str | None = None
+        self._tokens = 0
+        self._terminated = False
+
+    def feed(self, event: str | None, data: str) -> Iterable[TextDelta]:
+        name = self._adapter.provider.value
+        if data.strip() == "[DONE]":
+            self._terminated = True
+            return ()
+        try:
+            chunk = _CHUNK_ADAPTER.validate_json(data, strict=True)
+        except ValidationError as exc:
+            raise self._adapter._error(f"{name}: malformed stream chunk") from exc
+        if "error" in chunk:
+            detail = chunk["error"].get("message", "unknown error")
+            raise self._adapter._error(f"{name}: stream error: {detail}", retryable=True)
+        self._model = chunk.get("model") or self._model
+        usage = chunk.get("usage")
+        if usage:
+            self._tokens = _total_tokens(usage)
+        deltas: list[TextDelta] = []
+        for choice in chunk.get("choices", []):
+            text = choice.get("delta", {}).get("content")
+            if text:
+                deltas.append(TextDelta(text=text))
+            if choice.get("finish_reason"):
+                self._terminated = True
+        return deltas
+
+    def finish(self) -> StreamCompleted:
+        adapter = self._adapter
+        if not self._terminated:
+            raise ProviderError(
+                f"{adapter.provider.value}: stream ended before completion",
+                provider=adapter.provider,
+                retryable=True,
+            )
+        return StreamCompleted(
+            model_used=adapter._resolve_model(self._model, self._target),
+            provider=adapter.provider,
+            tokens_used=self._tokens,
+        )
 
 
 class OpenAICompatibleProvider(BaseProvider):
@@ -98,6 +179,9 @@ class OpenAICompatibleProvider(BaseProvider):
             payload["max_tokens"] = request.max_tokens
         return payload
 
+    def _stream_parser(self, target: RouteTarget) -> StreamParser:
+        return _OpenAIStreamParser(self, target)
+
     def _parse(self, body: bytes, target: RouteTarget) -> ProviderCompletion:
         try:
             parsed = _RESPONSE_ADAPTER.validate_json(body, strict=True)
@@ -108,13 +192,10 @@ class OpenAICompatibleProvider(BaseProvider):
         if content is None:
             raise self._error(f"{self.provider.value}: completion contained no text content")
 
-        usage = parsed.get("usage") or {}
-        tokens = usage.get("total_tokens")
-        if tokens is None:
-            tokens = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+        usage = parsed.get("usage")
         return ProviderCompletion(
             content=content,
             model_used=self._resolve_model(parsed.get("model"), target),
             provider=self.provider,
-            tokens_used=max(0, tokens),
+            tokens_used=_total_tokens(usage) if usage else 0,
         )

@@ -147,6 +147,13 @@ class QdrantSemanticCache:
         async with _translate("upsert"):
             await self._client.upsert(collection_name=self._collection, points=[point])
 
+    async def ping(self) -> None:
+        """Live readiness probe: the server answers and the collection is valid."""
+        await self.initialize()
+        async with _translate("ping"):
+            if not await self._client.collection_exists(self._collection):
+                raise CacheError(f"collection {self._collection!r} is missing")
+
     async def close(self) -> None:
         """Release the underlying client."""
         async with _translate("close"):
