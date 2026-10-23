@@ -9,9 +9,11 @@ from fastapi.responses import JSONResponse
 from ai_inference_gateway.api.sse import SSEResponse, sse_frames
 from ai_inference_gateway.core.engine import InferenceEngine
 from ai_inference_gateway.core.errors import CacheError
+from ai_inference_gateway.guardrails.metrics import GuardrailMetrics
 from ai_inference_gateway.schemas import (
     ComponentCheck,
     ErrorResponse,
+    GuardrailMetricsSnapshot,
     HealthStatus,
     InferenceRequest,
     InferenceResponse,
@@ -20,7 +22,7 @@ from ai_inference_gateway.tools.providers import DynamicProviderDispatcher
 from ai_inference_gateway.tools.qdrant_cache import QdrantSemanticCache
 
 _ERROR_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
-    status: {"model": ErrorResponse} for status in (400, 422, 500, 502, 503, 504)
+    status: {"model": ErrorResponse} for status in (400, 413, 422, 429, 500, 502, 503, 504)
 }
 
 
@@ -31,6 +33,7 @@ class GatewayServices:
     engine: InferenceEngine
     cache: QdrantSemanticCache
     dispatcher: DynamicProviderDispatcher
+    metrics: GuardrailMetrics
 
 
 def get_services(request: Request) -> GatewayServices:
@@ -72,6 +75,12 @@ async def ready(services: ServicesDep) -> JSONResponse:
     is_ready = all(check.ok for check in checks)
     body = HealthStatus(status="ready" if is_ready else "not_ready", checks=checks)
     return JSONResponse(status_code=200 if is_ready else 503, content=body.model_dump(mode="json"))
+
+
+@router.get("/metrics", response_model=GuardrailMetricsSnapshot, tags=["ops"])
+async def metrics(services: ServicesDep) -> GuardrailMetricsSnapshot:
+    """Per-process guardrail counters (rate limiting, routing tiers, token spend)."""
+    return services.metrics.snapshot()
 
 
 @router.post(

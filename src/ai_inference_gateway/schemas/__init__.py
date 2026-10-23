@@ -16,6 +16,7 @@ from ai_inference_gateway.schemas.inference import (
     InferenceRequest,
     InferenceResponse,
 )
+from ai_inference_gateway.schemas.metrics import GuardrailMetricsSnapshot
 from ai_inference_gateway.schemas.rate_limit import TokenBucketStatus
 from ai_inference_gateway.schemas.routing import (
     OPENAI_COMPATIBLE_PROVIDERS,
@@ -45,6 +46,7 @@ __all__ = [
     "ErrorDetail",
     "ErrorResponse",
     "FieldError",
+    "GuardrailMetricsSnapshot",
     "HealthStatus",
     "InferenceRequest",
     "InferenceResponse",

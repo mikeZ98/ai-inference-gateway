@@ -5,11 +5,14 @@ Provider keys use their conventional variable names (``ANTHROPIC_API_KEY``,
 providers with credentials (or, for local servers, a base URL) are enabled.
 """
 
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import AliasChoices, Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from ai_inference_gateway.core.heuristics import ComplexityPolicy
+from ai_inference_gateway.guardrails.middleware import TrustedNetworks, parse_networks
+from ai_inference_gateway.guardrails.rate_limiter import TokenBucketPolicy
 from ai_inference_gateway.schemas import DEFAULT_SIMILARITY_THRESHOLD, ModelProvider
 
 
@@ -45,6 +48,9 @@ class GatewaySettings(BaseSettings):
     tier2_model: str = "claude-sonnet-5-5"
     tier3_model: str = "claude-opus-5-5"
     tier3_min_score: float = Field(default=0.8, gt=0.0, le=1.0)
+    complexity_high_threshold: float = Field(default=0.45, gt=0.0, le=1.0)
+    complexity_long_prompt_tokens: int = Field(default=512, ge=1)
+    complexity_very_long_prompt_tokens: int = Field(default=2048, ge=1)
 
     # --- Semantic cache -------------------------------------------------------
     qdrant_url: str = Field(
@@ -62,6 +68,58 @@ class GatewaySettings(BaseSettings):
     embedding_base_url: str | None = None
     embedding_model: str | None = None
     embedding_api_key: SecretStr | None = None
+
+    # --- Guardrails -----------------------------------------------------------
+    redis_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("REDIS_URL", "GATEWAY_REDIS_URL"),
+        description="Redis for rate limiting; unset disables rate limiting.",
+    )
+    rate_limit_enabled: bool = True
+    rate_limit_capacity: int = Field(default=60, ge=1, le=1_000_000)
+    rate_limit_refill_per_second: float = Field(default=1.0, gt=0.0, le=1_000_000.0)
+    rate_limit_cost: int = Field(default=1, ge=1)
+    rate_limit_timeout_s: float = Field(default=0.25, gt=0.0, le=5.0)
+    max_body_bytes: int = Field(default=1_048_576, ge=1024, le=64 * 1_048_576)
+    trusted_proxies: Annotated[tuple[str, ...], NoDecode] = Field(
+        default=(),
+        description="Comma-separated CIDRs whose X-Forwarded-For is honored.",
+    )
+
+    @field_validator("trusted_proxies", mode="before")
+    @classmethod
+    def _split_proxies(cls, value: object) -> object:
+        if isinstance(value, str):
+            return tuple(part.strip() for part in value.split(",") if part.strip())
+        return value
+
+    @model_validator(mode="after")
+    def _guardrails_valid(self) -> Self:
+        # Fail at startup, not on the first request.
+        self.token_bucket_policy()
+        self.complexity_policy()
+        self.trusted_networks()
+        return self
+
+    def token_bucket_policy(self) -> TokenBucketPolicy:
+        """Return the rate-limit bucket shape."""
+        return TokenBucketPolicy(
+            capacity=self.rate_limit_capacity,
+            refill_per_second=self.rate_limit_refill_per_second,
+            cost=self.rate_limit_cost,
+        )
+
+    def complexity_policy(self) -> ComplexityPolicy:
+        """Return the tuned complexity thresholds."""
+        return ComplexityPolicy(
+            high_threshold=self.complexity_high_threshold,
+            long_prompt_tokens=self.complexity_long_prompt_tokens,
+            very_long_prompt_tokens=self.complexity_very_long_prompt_tokens,
+        )
+
+    def trusted_networks(self) -> TrustedNetworks:
+        """Return the parsed trusted proxy networks."""
+        return parse_networks(self.trusted_proxies)
 
     @model_validator(mode="after")
     def _embedding_complete(self) -> Self:
