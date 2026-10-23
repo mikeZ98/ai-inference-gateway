@@ -47,9 +47,15 @@ FROM ${PYTHON_IMAGE} AS runner
 LABEL org.opencontainers.image.title="ai-inference-gateway" \
       org.opencontainers.image.description="Async FastAPI inference gateway: semantic cache, complexity routing, rate limiting."
 
+# The runtime never installs packages, so the base image's pip goes. Its
+# vendored copies of urllib3, msgpack and setuptools carry HIGH CVEs that
+# Trivy flags. The ensurepip wheels embedding the same copies go too. The app
+# runs from /opt/venv, which uv builds without pip.
 RUN groupadd --system --gid 10001 appuser \
  && useradd --system --uid 10001 --gid appuser --no-create-home \
-            --home-dir /nonexistent --shell /usr/sbin/nologin appuser
+            --home-dir /nonexistent --shell /usr/sbin/nologin appuser \
+ && python -m pip uninstall --yes --no-input --root-user-action=ignore pip \
+ && rm -rf /usr/local/lib/python3.13/ensurepip/_bundled
 
 # Owned by root and not writable by appuser: the app cannot modify its own code.
 COPY --from=builder --chown=root:root /opt/venv /opt/venv
