@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# pre-push: audit every outgoing commit (catches anything committed with --no-verify).
+set -euo pipefail
+# shellcheck source=.githooks/_lib.sh
+. "$(git rev-parse --show-toplevel)/.githooks/_lib.sh"
+
+remote="$1"
+zero="0000000000000000000000000000000000000000"
+rc=0
+
+while read -r _ local_sha _ remote_sha; do
+  [ -n "${local_sha:-}" ] || continue
+  [ "$local_sha" = "$zero" ] && continue # branch deletion
+  if [ "$remote_sha" = "$zero" ]; then
+    # New remote branch: everything not already on the remote.
+    "$ATTRIBUTION" audit "$local_sha" --not "--remotes=${remote}" || rc=1
+  else
+    "$ATTRIBUTION" audit "${remote_sha}..${local_sha}" || rc=1
+  fi
+done
+
+if [ "$rc" -ne 0 ]; then
+  echo "pre-push: attribution invariant violated; rewrite the offending commits before pushing" >&2
+fi
+exit "$rc"

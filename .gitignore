@@ -1,0 +1,28 @@
+# SSD-pinned caches, virtualenvs, temp files (see .envrc)
+.cache/
+.venv/
+
+# Python artefacts (should land in .cache/, belt and braces)
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local secrets / overrides
+.env
+.env.*
+!.env.example
+.envrc.local
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,108 @@
+[project]
+name = "ai-inference-gateway"
+version = "0.1.0"
+description = "Async FastAPI inference gateway: semantic cache, complexity-based model routing, rate limiting."
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [{ name = "mikeZ98", email = "145975972+mikeZ98@users.noreply.github.com" }]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.28",
+    "qdrant-client>=1.12",
+    "redis>=5.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-httpx>=0.35",
+    "pytest-cov>=6.0",
+    "fakeredis>=2.26",
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "bandit[toml]>=1.8",
+]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ai_inference_gateway"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+# --- Ruff ---------------------------------------------------------------------
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+cache-dir = ".cache/ruff"
+extend-exclude = [".cache"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "RET", "PTH",
+    "ASYNC", "S", "BLE", "FBT", "PT", "RUF", "TRY", "PL", "ANN", "D",
+]
+ignore = [
+    "D100", "D104", "D105", "D107", "D203", "D213",
+    "TRY003", "PLR0913",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "D", "ANN", "PLR2004", "FBT"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# --- Mypy ---------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+strict = true
+cache_dir = ".cache/mypy"
+mypy_path = "src"
+packages = ["ai_inference_gateway"]
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# --- Pytest / coverage --------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.3"
+testpaths = ["tests"]
+cache_dir = ".cache/pytest"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = ["--strict-markers", "--strict-config", "-ra"]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["ai_inference_gateway"]
+data_file = ".cache/coverage/.coverage"
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
+
+[tool.coverage.html]
+directory = ".cache/coverage/html"
+
+[tool.coverage.xml]
+output = ".cache/coverage/coverage.xml"
+
+# --- Bandit -------------------------------------------------------------------
+[tool.bandit]
+exclude_dirs = ["tests", ".cache"]

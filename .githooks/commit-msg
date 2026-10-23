@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# commit-msg: Conventional Commits subject + attribution invariant.
+set -euo pipefail
+# shellcheck source=.githooks/_lib.sh
+. "$(git rev-parse --show-toplevel)/.githooks/_lib.sh"
+
+msg_file="$1"
+
+"$ATTRIBUTION" identity
+"$ATTRIBUTION" message "$msg_file"
+
+subject="$(sed -e '/^#/d' -e '/^[[:space:]]*$/d' "$msg_file" | head -n 1)"
+cc_re='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: [^[:space:]].*$'
+passthrough_re='^(Merge |Revert "|fixup! |squash! |amend! )'
+
+if ! printf '%s\n' "$subject" | grep -qE "$cc_re" && ! printf '%s\n' "$subject" | grep -qE "$passthrough_re"; then
+  {
+    echo "commit-msg: subject is not a Conventional Commit:"
+    echo "  ${subject}"
+    echo "expected: <type>(<scope>)?: <description>"
+    echo "types: feat fix docs style refactor perf test build ci chore revert"
+  } >&2
+  exit 1
+fi
+
+if [ "${#subject}" -gt 72 ]; then
+  echo "commit-msg: warning: subject is ${#subject} chars (>72 recommended)" >&2
+fi

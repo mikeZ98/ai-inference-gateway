@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# pre-commit: contributor identity, forbidden paths, secrets, ruff.
+set -euo pipefail
+# shellcheck source=.githooks/_lib.sh
+. "$(git rev-parse --show-toplevel)/.githooks/_lib.sh"
+
+# 1. Sole-contributor identity (author + committer, honours --author and GIT_* env).
+"$ATTRIBUTION" identity
+
+staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+[ -n "$staged" ] || exit 0
+
+# 2. Never commit caches, virtualenvs or local secrets.
+forbidden="$(printf '%s\n' "$staged" \
+  | grep -E '^(\.cache/|\.venv/)|(^|/)\.env(\..+)?$|(^|/)\.envrc\.local$' \
+  | grep -vE '(^|/)\.env\.example$' || true)"
+if [ -n "$forbidden" ]; then
+  echo "pre-commit: refusing to commit caches, virtualenvs or local secrets:" >&2
+  printf '%s\n' "$forbidden" >&2
+  exit 1
+fi
+
+# 3. Obvious secrets in the staged diff.
+secret_re='-----BEGIN [A-Z ]*PRIVATE KEY-----|sk-ant-[A-Za-z0-9_-]{20,}|sk-or-v1-[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{32,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}'
+if git diff --cached -U0 --diff-filter=ACMR | grep -E '^\+' | grep -qE -- "$secret_re"; then
+  echo "pre-commit: staged changes look like they contain a secret/API key" >&2
+  exit 1
+fi
+
+# 4. Ruff lint + format check on staged Python files.
+py_files="$(printf '%s\n' "$staged" | grep -E '\.pyi?$' || true)"
+if [ -n "$py_files" ]; then
+  if [ ! -x "${VENV_BIN}/ruff" ]; then
+    echo "pre-commit: ruff not found in ${VENV_BIN}; run 'uv sync' first" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC2086
+  "${VENV_BIN}/ruff" check --force-exclude $py_files
+  # shellcheck disable=SC2086
+  "${VENV_BIN}/ruff" format --check --force-exclude $py_files
+fi
