@@ -15,14 +15,25 @@ class ModelProvider(StrEnum):
 
     OPENROUTER = "openrouter"
     MISTRAL = "mistral"
+    DEEPSEEK = "deepseek"
+    GROQ = "groq"
+    TOGETHER = "together"
+    OPENAI = "openai"
+    VLLM = "vllm"
+    OLLAMA = "ollama"
     ANTHROPIC = "anthropic"
+
+
+OPENAI_COMPATIBLE_PROVIDERS: Final[frozenset[ModelProvider]] = frozenset(
+    set(ModelProvider) - {ModelProvider.ANTHROPIC}
+)
 
 
 class RoutingTier(IntEnum):
     """Cascading routing tiers, cheapest first."""
 
     TIER_1 = 1
-    """Low complexity: OpenRouter / Mistral."""
+    """Low complexity: OpenAI-compatible providers (OpenRouter, Mistral, DeepSeek, ...)."""
     TIER_2 = 2
     """High complexity: Claude (standard)."""
     TIER_3 = 3
@@ -31,7 +42,7 @@ class RoutingTier(IntEnum):
 
 TIER_PROVIDERS: Final[Mapping[RoutingTier, frozenset[ModelProvider]]] = MappingProxyType(
     {
-        RoutingTier.TIER_1: frozenset({ModelProvider.OPENROUTER, ModelProvider.MISTRAL}),
+        RoutingTier.TIER_1: OPENAI_COMPATIBLE_PROVIDERS,
         RoutingTier.TIER_2: frozenset({ModelProvider.ANTHROPIC}),
         RoutingTier.TIER_3: frozenset({ModelProvider.ANTHROPIC}),
     }
@@ -39,11 +50,16 @@ TIER_PROVIDERS: Final[Mapping[RoutingTier, frozenset[ModelProvider]]] = MappingP
 
 
 class RouteTarget(StrictModel):
-    """Resolved destination for a request: tier, provider and concrete model."""
+    """Resolved destination for a request: tier, provider and concrete model.
+
+    ``endpoint`` optionally pins a specific base URL when several adapters
+    share a provider (e.g. two vLLM deployments).
+    """
 
     tier: RoutingTier
     provider: ModelProvider
     model: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:/-]+$")
+    endpoint: str | None = Field(default=None, max_length=2048, pattern=r"^https?://[^\s/]+\S*$")
 
     @model_validator(mode="after")
     def _provider_matches_tier(self) -> Self:

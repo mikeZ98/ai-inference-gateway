@@ -124,6 +124,8 @@ class OpenAICompatibleEmbedder:
 
     async def embed(self, text: str) -> Embedding:
         """Embed ``text`` via the remote endpoint."""
+        # Transport errors are raised 'from None': httpx exceptions carry the
+        # request (incl. auth headers), which must never reach tracebacks/trackers.
         try:
             response = await self._client.post(
                 self._url,
@@ -135,9 +137,9 @@ class OpenAICompatibleEmbedder:
         except httpx.HTTPStatusError as exc:
             raise EmbeddingError(
                 f"embedding endpoint returned HTTP {exc.response.status_code}"
-            ) from exc
+            ) from None
         except httpx.HTTPError as exc:
-            raise EmbeddingError(f"embedding request failed: {type(exc).__name__}") from exc
+            raise EmbeddingError(f"embedding request failed: {type(exc).__name__}") from None
 
         try:
             payload = _RESPONSE_ADAPTER.validate_json(response.content, strict=True)

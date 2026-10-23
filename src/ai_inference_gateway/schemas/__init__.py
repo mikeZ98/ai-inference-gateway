@@ -16,6 +16,7 @@ from ai_inference_gateway.schemas.inference import (
 )
 from ai_inference_gateway.schemas.rate_limit import TokenBucketStatus
 from ai_inference_gateway.schemas.routing import (
+    OPENAI_COMPATIBLE_PROVIDERS,
     TIER_PROVIDERS,
     ModelProvider,
     RouteTarget,
@@ -24,6 +25,7 @@ from ai_inference_gateway.schemas.routing import (
 
 __all__ = [
     "DEFAULT_SIMILARITY_THRESHOLD",
+    "OPENAI_COMPATIBLE_PROVIDERS",
     "TIER_PROVIDERS",
     "CacheEntry",
     "CacheQuery",

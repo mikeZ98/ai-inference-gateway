@@ -57,7 +57,11 @@ class Router(Protocol):
 
 
 class ProviderDispatcher(Protocol):
-    """Sends a request to the provider named by a route target. Raises ``ProviderError``."""
+    """Sends a request to the provider named by a route target.
+
+    Raises ``ProviderError`` on upstream failure, ``RoutingError`` when no
+    adapter is configured for the target.
+    """
 
     async def complete(self, target: RouteTarget, request: InferenceRequest) -> ProviderCompletion:
         """Run the completion upstream."""
