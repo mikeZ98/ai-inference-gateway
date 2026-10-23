@@ -1,0 +1,28 @@
+# Allowlist: deny everything, then re-include only the build inputs.
+# Anything not listed below never reaches the build context.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+
+# Never ship, even inside re-included paths.
+**/__pycache__/
+**/*.py[cod]
+**/.DS_Store
+
+# Explicitly excluded (already covered by "*" above; listed for reviewers).
+.git/
+.githooks/
+.cache/
+.venv/
+tests/
+docs/
+.env
+.env.*
+.envrc
+.envrc.local
+*.log
+*.tmp
+coverage.xml
+.coverage*
