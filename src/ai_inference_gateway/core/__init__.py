@@ -10,7 +10,9 @@ from ai_inference_gateway.core.errors import (
     CacheError,
     EmbeddingError,
     GatewayError,
+    ModelNotAvailableError,
     ProviderError,
+    ProviderTimeoutError,
     RoutingError,
 )
 from ai_inference_gateway.core.heuristics import (
@@ -36,10 +38,12 @@ __all__ = [
     "HashingEmbedder",
     "HeuristicComplexityAssessor",
     "InferenceEngine",
+    "ModelNotAvailableError",
     "OpenAICompatibleEmbedder",
     "ProviderCompletion",
     "ProviderDispatcher",
     "ProviderError",
+    "ProviderTimeoutError",
     "Router",
     "RoutingError",
     "SemanticCache",

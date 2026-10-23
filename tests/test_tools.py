@@ -14,8 +14,14 @@ from pydantic import SecretStr, ValidationError
 from pytest_httpx import HTTPXMock
 from qdrant_client import AsyncQdrantClient, models
 
-from ai_inference_gateway.core import CacheError, HashingEmbedder, ProviderError, RoutingError
-from ai_inference_gateway.core.errors import ModelNotAvailableError, ProviderTimeoutError
+from ai_inference_gateway.core import (
+    CacheError,
+    HashingEmbedder,
+    ModelNotAvailableError,
+    ProviderError,
+    ProviderTimeoutError,
+    RoutingError,
+)
 from ai_inference_gateway.core.ports import ProviderStreamEvent, StreamCompleted, TextDelta
 from ai_inference_gateway.schemas import (
     CacheEntry,
