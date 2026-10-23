@@ -30,8 +30,8 @@ from ai_inference_gateway.core import (
     EmbeddingError,
     GatewayError,
     OpenAICompatibleEmbedder,
+    ProviderError,
 )
-from ai_inference_gateway.core.errors import ProviderError
 from ai_inference_gateway.schemas import (
     ErrorResponse,
     HealthStatus,
