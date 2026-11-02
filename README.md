@@ -7,8 +7,10 @@ handle it** (Mistral / OpenRouter-class models for simple prompts, Claude Sonnet
 or Opus for complex ones), **rate-limits every client** with a Redis token
 bucket, and streams tokens back over **Server-Sent Events**.
 
-- **Fewer paid calls:** near-duplicate prompts (cosine similarity strictly
-  above 0.95) are served from the cache with zero provider tokens.
+- **Fewer paid calls, no wrong answers:** near-duplicate prompts (cosine
+  similarity strictly above 0.95) are served from the cache with zero provider
+  tokens, but only after a lexical check confirms their numbers, operators and
+  negations match, so "within 30 days" never gets the "within 60 days" answer.
 - **Right-sized models:** a deterministic, linear-time heuristic scores prompt
   complexity and routes it to tier 1, 2 or 3.
 - **Safe by construction:** strict, closed Pydantic v2 contracts at every
@@ -48,7 +50,7 @@ flowchart LR
     subgraph engine["InferenceEngine"]
         direction TB
         embed["Embed prompt"]
-        cache{"Semantic cache<br/>Qdrant, cosine<br/>similarity > 0.95?"}
+        cache{"Semantic cache<br/>Qdrant, cosine<br/>similarity > 0.95<br/>+ lexical check?"}
         heur["Heuristic complexity<br/>score 0..1"]
         router["Complexity router"]
         embed --> cache
@@ -82,9 +84,10 @@ flowchart LR
     tiers -. "tokens consumed" .-> metrics
 ```
 
-The three ports between the engine and the outside world (`SemanticCache`,
-`Router`, `ProviderDispatcher`) are Protocols in `core/ports.py`. The concrete
-adapters live in `tools/`, and metrics are added by decorators in
+The four ports between the engine and the outside world (`SemanticCache`,
+`CacheHitVerifier`, `Router`, `ProviderDispatcher`) are Protocols in
+`core/ports.py`. The concrete adapters live in `tools/` and `guardrails/`
+(the lexical verifier), and metrics are added by decorators in
 `guardrails/metrics.py`, so the engine never imports infrastructure code.
 
 ## Request lifecycle
@@ -107,7 +110,7 @@ sequenceDiagram
     G->>E: InferenceRequest
     E->>E: embed prompt (skipped when "model" is set)
     E->>Q: nearest neighbour (cosine)
-    alt cache hit: similarity > 0.95
+    alt cache hit: similarity > 0.95 and lexical check passes
         Q-->>E: cached answer
         E-->>C: 200 cached_hit=true, tokens_used=0
     else cache miss
@@ -151,9 +154,58 @@ embedder never fails a request.
 | Hit rule | similarity **strictly greater than** `GATEWAY_SIMILARITY_THRESHOLD`, default **0.95**, allowed range `[0.95, 1.0)`. Qdrant's `score_threshold` is inclusive, so the engine re-checks `> threshold` itself. |
 | Keys | one point per prompt (UUIDv5 of the text): re-storing a prompt overwrites it |
 | Writes | only complete, non-empty answers; interrupted streams are never cached |
+| Lexical check | every above-threshold hit is re-verified; differing numbers, operators or negations make it a miss ([details](#lexical-hit-verification)) |
 | Overrides | a request with an explicit `model` bypasses the cache in both directions |
 | Failure mode | embedding or Qdrant errors are logged and treated as a miss; `/ready` reports Qdrant separately |
 | Embedders | `hashing` (default): offline, deterministic BLAKE2b feature hashing, matches near-identical wording. `openai_compatible`: any `/embeddings` endpoint (OpenAI, `mistral-embed`, TEI) for true semantic matching. |
+
+### Lexical hit verification
+
+Cosine similarity measures how much two prompts overlap, not whether they ask
+the same thing. With the default feature-hashing embedder, long prompts that
+differ in a single critical token still score far above the threshold
+(reproduced in `tests/test_core.py`):
+
+| Cached prompt ends with | New prompt ends with | Cosine (`hashing`, 384-d) |
+| --- | --- | --- |
+| "…within 30 days of receipt." | "…within 60 days of receipt." | 0.993 |
+| "…shall pay the late delivery penalty." | "…shall not pay the late delivery penalty." | 0.994 |
+| "…(z^2 - 1) / (z+1)" | "…(z^2 - 1) / (z-1)" | 0.991 |
+
+Serving the cached answer there is a silent correctness bug, so every hit that
+clears the threshold goes through a deterministic `CacheHitVerifier`
+(`guardrails/lexical.py`). The answer is served only if both prompts contain,
+in the same order:
+
+- **the same numbers:** digit literals (`1,500` equals `1500`, `2.50` equals
+  `2.5`, the currency symbol counts) and number words such as "thirty";
+- **the same math operators** next to a number, a one-letter variable or a
+  bracket (`z+1` vs `z-1`, `5%` vs `5`), but not hyphens in prose;
+- **the same negations** (`not`, `no`, `never`, `none`, `nor`, `neither`,
+  `without`, `unless`, `except`, and contractions such as `don't` and
+  `can't`), each paired with the word it governs, so a negation that moves
+  between clauses is also caught;
+
+and neither prompt flips a word of the other with a negative prefix
+(`lawful` / `unlawful`, `compliant` / `non-compliant`). Any difference turns
+the hit into a miss: the provider answers, the new answer is cached under its
+own prompt, and `/metrics` counts the refusal in `cache_hits_rejected`.
+
+**Design trade-off.**
+
+| Approach | Catches "30 vs 60 days", "pay vs not pay" | Extra cost per hit | Effect on hit rate |
+| --- | --- | --- | --- |
+| Hashing embedder alone | No | none | highest, including wrong answers |
+| **Hashing embedder + lexical verifier** (default) | Yes, for numbers, operators and negations | microseconds of CPU, no model, no network | rewordings that change a number or negation become misses |
+| Dense bi-encoder embeddings | Not reliably: embeddings are known to be weak on numbers and negation | one embedding call | paraphrases hit |
+| Cross-encoder re-ranking of candidates | Mostly, including verbs like "fail to pay" | one model call per hit, added latency | best precision |
+
+The verifier is deliberately conservative: a false miss costs one provider
+call, while a false hit returns a confident wrong answer. It runs regardless of
+the configured embedder, because bi-encoders do not fix this class of error on
+their own. A cross-encoder stage would cover meaning changes that have no
+surface cue, at the cost of a model call per hit; see the
+[roadmap](#limitations-and-roadmap).
 
 ### Dynamic model cascading
 
@@ -236,7 +288,7 @@ echoed. Retryable errors carry `Retry-After`.
 | --- | --- |
 | **Sole contributor identity:** every commit is authored and committed by `mikeZ98 <145975972+mikeZ98@users.noreply.github.com>`, under Conventional Commits | `scripts/attribution.sh`, run by the `pre-commit`, `commit-msg` and `pre-push` hooks and by the CI `attribution-audit` job. PRs are merged fast-forward only (UI merges change the committer and are rejected). |
 | **Storage isolation:** tool state stays inside the repo or a configurable Docker state root | `.envrc` pins the venv, uv, Python, ruff, mypy, pytest, coverage, pycache and `TMPDIR` under `./.cache/`. Docker: `COLIMA_HOME=$DOCKER_STATE_ROOT/.colima` (VM disk, so data-root and BuildKit cache) and `BUILDX_CONFIG=./.cache/buildx`. See [CONTRIBUTING.md](CONTRIBUTING.md#docker-storage-isolation-ssd-invariant). |
-| **Hermetic offline tests:** 349 tests, **99.65 % branch coverage** (gate: 90 %), about 3 s | A socket-level guard blocks every non-loopback connection and DNS lookup; provider, Redis and Qdrant environment variables are scrubbed; Qdrant runs `:memory:`, Redis is `fakeredis` running the real Lua, and HTTP goes through `httpx.MockTransport` / `pytest-httpx`. Both guards are self-tested. |
+| **Hermetic offline tests:** 388 tests, **99.67 % branch coverage** (gate: 90 %), about 3 s | A socket-level guard blocks every non-loopback connection and DNS lookup; provider, Redis and Qdrant environment variables are scrubbed; Qdrant runs `:memory:`, Redis is `fakeredis` running the real Lua, and HTTP goes through `httpx.MockTransport` / `pytest-httpx`. Both guards are self-tested. |
 | **Strict typing and linting** | `mypy --strict` over `src/` and `tests/`, a broad ruff rule set, `bandit`; all Pydantic models are `extra="forbid", frozen=True, strict=True` |
 | **Hardened container** | Multi-stage build with digest-pinned `python:3.13-slim`; only the production venv is copied in, owned by root; runs as uid **10001**; works on a read-only rootfs with tmpfs `/tmp`; `HEALTHCHECK` uses the Python stdlib (no curl/wget); no `Server` header |
 | **Supply-chain-pinned CI** | Every action is pinned to a full commit SHA that is verified, on its default branch, at least 7 days old and advisory-checked. Trivy (action and binary) is pinned past the 2026 compromise and its CVEs. The image is scanned (fixable CRITICAL/HIGH fail the build) and the exact scanned image is pushed to GHCR from `main` only; `packages: write` is scoped to that job. |
@@ -410,7 +462,7 @@ x-ratelimit-reset: 1792754457
 | `POST` | `/v1/inference` | Body: `{"prompt": str, "temperature"?: 0–2, "max_tokens"?: 1–32768, "model"?: str, "stream"?: bool}`. Returns an `InferenceResponse` (JSON) or an SSE stream. Rate-limited. |
 | `GET` | `/health` | Liveness: `{"status": "ok"}` |
 | `GET` | `/ready` | Readiness: Qdrant reachable and at least one provider configured; 503 `not_ready` otherwise |
-| `GET` | `/metrics` | Per-process counters: requests allowed, rate-limited and failed-open; payloads rejected; complexity and tier decisions; upstream completions; tokens consumed |
+| `GET` | `/metrics` | Per-process counters: requests allowed, rate-limited and failed-open; payloads rejected; complexity and tier decisions; upstream completions; tokens consumed; cache hits refused by the lexical verifier |
 | `GET` | `/docs`, `/openapi.json` | Generated OpenAPI documentation |
 
 The request body is strict: unknown fields, `"10"` for an integer or a blank
@@ -423,9 +475,9 @@ src/ai_inference_gateway/
 ├── schemas/      strict Pydantic v2 contracts (requests, cache, routing, errors, SSE, metrics)
 ├── core/         engine, heuristics, embedders, domain errors, ports (Protocols)
 ├── tools/        Qdrant cache, complexity router, provider adapters + dispatcher
-├── guardrails/   Redis token bucket, ASGI middleware, metrics decorators
+├── guardrails/   Redis token bucket, ASGI middleware, lexical cache-hit verifier, metrics decorators
 └── api/          FastAPI factory + lifespan, settings, routes, error mapping, SSE response
-tests/            hermetic suite (conftest guards, fakes, 349 tests)
+tests/            hermetic suite (conftest guards, fakes, 388 tests)
 scripts/          attribution.sh (sole-contributor identity invariant)
 .githooks/        pre-commit, commit-msg, pre-push
 Dockerfile, docker-compose.yml, .github/workflows/ci.yml
@@ -439,6 +491,12 @@ Dockerfile, docker-compose.yml, .github/workflows/ci.yml
   `retryable` flag, but a failed tier-1 call is not retried on another tier yet.
 - **Lexical default embedder.** `hashing` only matches near-identical wording.
   Use `openai_compatible` embeddings for paraphrase-level semantic caching.
+- **The lexical verifier only sees surface cues.** Units ("30 days" vs
+  "30 weeks"), number words outside its list and negation carried by verbs
+  ("fail to pay", "refuse") pass through. It also checks only the nearest
+  candidate: if that one is refused, the request is a miss even when a farther
+  entry would match. A cross-encoder re-ranker over the top-k candidates would
+  close both gaps.
 - **Per-process metrics** as typed JSON with no authentication; a Prometheus
   exposition endpoint is a natural next step.
 - **No circuit breaker for Redis:** while Redis is down, each request waits up
