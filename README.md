@@ -1,6 +1,6 @@
 # ai-inference-gateway
 
-**AI Systems Blueprint: repository 01/20.** An asynchronous FastAPI gateway that
+An asynchronous FastAPI gateway that
 sits in front of LLM providers. It answers repeated questions from a **Qdrant
 semantic cache**, sends each new prompt to the **cheapest model tier that can
 handle it** (Mistral / OpenRouter-class models for simple prompts, Claude Sonnet
@@ -234,8 +234,8 @@ echoed. Retryable errors carry `Retry-After`.
 
 | Invariant | How it is enforced |
 | --- | --- |
-| **Sole contributor identity:** every commit is authored and committed by `mikeZ98 <145975972+mikeZ98@users.noreply.github.com>`, with no AI trailers or signatures | `scripts/attribution.sh`, run by the `pre-commit`, `commit-msg` and `pre-push` hooks and by the CI `attribution-audit` job. PRs are merged fast-forward only (UI merges change the committer and are rejected). |
-| **SSD storage isolation:** nothing is written to the host's internal disk | `.envrc` pins the venv, uv, Python, ruff, mypy, pytest, coverage, pycache and `TMPDIR` under `./.cache/`. Docker: `COLIMA_HOME=/Volumes/KINGSTONE_SSD/.colima` (VM disk, so data-root and BuildKit cache) and `BUILDX_CONFIG=./.cache/buildx`. See [CONTRIBUTING.md](CONTRIBUTING.md#docker-storage-isolation-ssd-invariant). |
+| **Sole contributor identity:** every commit is authored and committed by `mikeZ98 <145975972+mikeZ98@users.noreply.github.com>`, under Conventional Commits | `scripts/attribution.sh`, run by the `pre-commit`, `commit-msg` and `pre-push` hooks and by the CI `attribution-audit` job. PRs are merged fast-forward only (UI merges change the committer and are rejected). |
+| **Storage isolation:** tool state stays inside the repo or a configurable Docker state root | `.envrc` pins the venv, uv, Python, ruff, mypy, pytest, coverage, pycache and `TMPDIR` under `./.cache/`. Docker: `COLIMA_HOME=$DOCKER_STATE_ROOT/.colima` (VM disk, so data-root and BuildKit cache) and `BUILDX_CONFIG=./.cache/buildx`. See [CONTRIBUTING.md](CONTRIBUTING.md#docker-storage-isolation-ssd-invariant). |
 | **Hermetic offline tests:** 349 tests, **99.65 % branch coverage** (gate: 90 %), about 3 s | A socket-level guard blocks every non-loopback connection and DNS lookup; provider, Redis and Qdrant environment variables are scrubbed; Qdrant runs `:memory:`, Redis is `fakeredis` running the real Lua, and HTTP goes through `httpx.MockTransport` / `pytest-httpx`. Both guards are self-tested. |
 | **Strict typing and linting** | `mypy --strict` over `src/` and `tests/`, a broad ruff rule set, `bandit`; all Pydantic models are `extra="forbid", frozen=True, strict=True` |
 | **Hardened container** | Multi-stage build with digest-pinned `python:3.13-slim`; only the production venv is copied in, owned by root; runs as uid **10001**; works on a read-only rootfs with tmpfs `/tmp`; `HEALTHCHECK` uses the Python stdlib (no curl/wget); no `Server` header |
@@ -426,7 +426,7 @@ src/ai_inference_gateway/
 ├── guardrails/   Redis token bucket, ASGI middleware, metrics decorators
 └── api/          FastAPI factory + lifespan, settings, routes, error mapping, SSE response
 tests/            hermetic suite (conftest guards, fakes, 349 tests)
-scripts/          attribution.sh (sole-contributor invariant)
+scripts/          attribution.sh (sole-contributor identity invariant)
 .githooks/        pre-commit, commit-msg, pre-push
 Dockerfile, docker-compose.yml, .github/workflows/ci.yml
 ```

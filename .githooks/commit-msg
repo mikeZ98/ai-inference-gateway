@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# commit-msg: Conventional Commits subject + attribution invariant.
+# commit-msg: Conventional Commits subject + identity invariant (merges skip pre-commit).
 set -euo pipefail
 # shellcheck source=.githooks/_lib.sh
 . "$(git rev-parse --show-toplevel)/.githooks/_lib.sh"
@@ -7,7 +7,6 @@ set -euo pipefail
 msg_file="$1"
 
 "$ATTRIBUTION" identity
-"$ATTRIBUTION" message "$msg_file"
 
 subject="$(sed -e '/^#/d' -e '/^[[:space:]]*$/d' "$msg_file" | head -n 1)"
 cc_re='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: [^[:space:]].*$'

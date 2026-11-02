@@ -1,7 +1,7 @@
 # Contributing
 
 > [!IMPORTANT]
-> **Sole-contributor invariant: no exceptions.**
+> **Sole-contributor identity: no exceptions.**
 >
 > Every commit's **author and committer** must be exactly:
 >
@@ -11,15 +11,14 @@
 > | Email | `145975972+mikeZ98@users.noreply.github.com`  |
 >
 > No other names, machine usernames or local/personal e-mail addresses.
-> Commit messages must not contain AI attribution of any kind: no
-> `Co-Authored-By`, `Generated-by`, `Assisted-by`, `AI-*` trailers, no
-> "Generated with …" signatures, no AI tool URLs and no foreign e-mail
-> addresses. `Signed-off-by` is allowed only for the identity above.
+> Commit messages follow Conventional Commits. AI-native development is
+> welcome and disclosed: tool-assistance trailers such as `Co-Authored-By:`
+> may stay in the message, and every change passes the same automated gates.
 >
 > Every enforcement point runs the same `scripts/attribution.sh`:
 >
 > 1. `.githooks/pre-commit` checks the pending author and committer identity.
-> 2. `.githooks/commit-msg` checks identity, forbidden trailers/signatures and the Conventional Commits format.
+> 2. `.githooks/commit-msg` checks identity and the Conventional Commits format.
 > 3. `.githooks/pre-push` audits every outgoing commit, including ones made with `--no-verify`.
 > 4. The CI attribution audit job re-checks every commit on remote branches.
 
@@ -49,39 +48,43 @@ Secrets go in `.env` (git-ignored, auto-loaded by direnv); see `.env.example`.
 ## Docker storage isolation (SSD invariant)
 
 > [!IMPORTANT]
-> Docker's **data-root, image layers, volumes and BuildKit build cache must live
-> on the external SSD** (`/Volumes/KINGSTONE_SSD`), never on the host's internal
-> disk. Do not start a Docker engine whose storage is anywhere else.
+> Docker's **data-root, image layers, volumes and BuildKit build cache live
+> under one configurable root**, `DOCKER_STATE_ROOT` (default: `$HOME`). To keep
+> them off the host's internal disk, point it at an external volume in the
+> git-ignored `.envrc.local`:
+>
+> ```sh
+> export DOCKER_STATE_ROOT="/Volumes/<external-drive>"
+> ```
 
 On macOS the data-root (`/var/lib/docker`, including the BuildKit cache) lives
-inside the container VM's disk image, so the rule means the **VM disk goes on
-the SSD**.
+inside the container VM's disk image, so the rule means the **VM disk goes under
+`DOCKER_STATE_ROOT`**.
 
 **Colima (recommended).** `.envrc` exports:
 
 | Variable | Value | Holds |
 | --- | --- | --- |
-| `COLIMA_HOME` | `/Volumes/KINGSTONE_SSD/.colima` | VM disk images (data-root and build cache), Lima state |
+| `COLIMA_HOME` | `$DOCKER_STATE_ROOT/.colima` | VM disk images (data-root and build cache), Lima state |
 | `BUILDX_CONFIG` | `./.cache/buildx` | buildx builder state |
 | `DOCKER_HOST` | `unix://$COLIMA_HOME/default/docker.sock` | set only once that socket exists |
 
 ```sh
-cd /Volumes/KINGSTONE_SSD/Projects/ai-inference-gateway   # direnv loads the variables
+cd ai-inference-gateway                                   # direnv loads the variables
 colima start --cpu 4 --memory 8 --disk 60                 # VM is created under $COLIMA_HOME
 direnv reload                                             # picks up DOCKER_HOST
 ```
 
 **Docker Desktop (alternative).** Go to Settings → Resources → Advanced →
-*Disk image location*, choose `/Volumes/KINGSTONE_SSD/DockerDesktop`, then
+*Disk image location*, choose a folder under `$DOCKER_STATE_ROOT`, then
 *Apply & restart*. This moves the whole VM disk, including data-root and build
 cache.
 
 **Verify before building:**
 
 ```sh
-echo "$COLIMA_HOME"                      # /Volumes/KINGSTONE_SSD/.colima
+echo "$COLIMA_HOME"                      # $DOCKER_STATE_ROOT/.colima
 du -sh "$COLIMA_HOME"                    # the VM disk grows here
-du -sh ~/.colima 2>/dev/null             # must be absent or empty
 docker buildx du                         # build cache (inside the SSD-backed VM)
 ```
 

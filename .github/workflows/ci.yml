@@ -1,4 +1,4 @@
-# CI: attribution audit -> quality gates -> image build + Trivy scan -> GHCR publish (main only).
+# CI: identity audit -> quality gates -> image build + Trivy scan -> GHCR publish (main only).
 #
 # Supply chain: every action is pinned to a full commit SHA. Each pin was
 # resolved from its release tag, is GitHub-verified, reachable from the
