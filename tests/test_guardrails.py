@@ -17,6 +17,9 @@ from ai_inference_gateway.api import GatewaySettings
 from ai_inference_gateway.guardrails import (
     BodySizeLimitMiddleware,
     GuardrailMetrics,
+    InstrumentedCacheHitVerifier,
+    LexicalCacheVerifier,
+    LexicalMismatch,
     RedisTokenBucketLimiter,
     TokenBucketPolicy,
     parse_networks,
@@ -452,3 +455,107 @@ def test_guardrail_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_invalid_guardrail_settings(bad: dict[str, Any]) -> None:
     with pytest.raises((ValidationError, ValueError)):
         GatewaySettings(**bad)
+
+
+# --- Lexical cache-hit verification ---------------------------------------------
+
+CONTRACT = "Summarise this supplier agreement for the finance team. "
+
+
+@pytest.mark.parametrize(
+    ("prompt", "cached_prompt", "reason"),
+    [
+        # The audited false positives.
+        (CONTRACT + "Pay within 30 days.", CONTRACT + "Pay within 60 days.", "numbers"),
+        (CONTRACT + "The buyer shall pay.", CONTRACT + "The buyer shall not pay.", "negation"),
+        ("Simplify (z^2 - 1) / (z+1)", "Simplify (z^2 - 1) / (z-1)", "operators"),
+        # Amounts: magnitude, currency, decimals.
+        ("Cap the penalty at $1,500.", "Cap the penalty at $15,000.", "numbers"),
+        ("Cap the penalty at $1,500.", "Cap the penalty at €1,500.", "numbers"),
+        ("Charge 2.5 per unit.", "Charge 2.05 per unit.", "numbers"),
+        # Spelled-out numbers, and numbers that only swap places.
+        ("Pay within thirty days.", "Pay within sixty days.", "numbers"),
+        ("Pay within 30 days, penalty 60.", "Pay within 60 days, penalty 30.", "numbers"),
+        ("Upgrade to API v2.", "Upgrade to API v3.", "numbers"),
+        # Operators next to variables, numbers and percentages.
+        ("Solve x + y = 10.", "Solve x - y = 10.", "operators"),
+        ("Apply a 5% discount.", "Apply a 5 discount.", "operators"),
+        (
+            "-40 degrees overnight: what to wear?",
+            "40 degrees overnight: what to wear?",
+            "operators",
+        ),
+        # Negation: added, contracted, swapped between clauses, other cues.
+        ("You must renew the licence.", "You must never renew the licence.", "negation"),
+        ("Do pay the deposit.", "Don't pay the deposit.", "negation"),
+        (
+            "Approve the loan but not the grant.",
+            "Approve the grant but not the loan.",
+            "negation",
+        ),
+        ("Ship it with a signature.", "Ship it without a signature.", "negation"),
+        ("Refund in all cases.", "Refund in no cases.", "negation"),
+        # Polarity prefixes.
+        ("Is this clause lawful?", "Is this clause unlawful?", "polarity_prefix"),
+        ("List the compliant vendors.", "List the non-compliant vendors.", "polarity_prefix"),
+        ("Is the signature valid?", "Is the signature invalid?", "polarity_prefix"),
+    ],
+)
+def test_lexical_verifier_refuses_critical_differences(
+    prompt: str, cached_prompt: str, reason: str
+) -> None:
+    verifier = LexicalCacheVerifier()
+    assert verifier.mismatch(prompt, cached_prompt) == LexicalMismatch(reason)
+    assert verifier.mismatch(cached_prompt, prompt) == LexicalMismatch(reason)
+
+
+@pytest.mark.parametrize(
+    ("prompt", "cached_prompt"),
+    [
+        ("What is the capital of France?", "What is the capital of France?"),
+        ("What is the  CAPITAL of France?", "what is the capital of france?"),
+        ("Explain photosynthesis simply.", "Explain photosynthesis in simple terms."),
+        # Same numbers, different spelling.
+        ("Cap it at $1,500.", "Cap it at $1500."),
+        ("Charge 2.50 per unit.", "Charge 2.5 per unit."),
+        (
+            "Pay within \N{FULLWIDTH DIGIT THREE}\N{FULLWIDTH DIGIT ZERO} days.",
+            "Pay within 30 days.",
+        ),
+        # Same operator, different glyph or spacing.
+        ("Simplify z\N{MINUS SIGN}1", "Simplify z - 1"),
+        ("Compute 6 \N{MULTIPLICATION SIGN} 7", "Compute 6*7"),
+        # Same negation, different spelling.
+        ("Don't pay the deposit.", "Do not pay the deposit."),
+        ("We can't ship today.", "We cannot ship today."),
+        ("We won\N{RIGHT SINGLE QUOTATION MARK}t ship.", "We will not ship."),
+        # Hyphenated prose is not arithmetic; short stems are not polarity prefixes.
+        ("Schedule a follow-up call.", "Schedule a follow-up meeting."),
+        ("Undo the change.", "Do the change."),
+    ],
+)
+def test_lexical_verifier_accepts_equivalent_prompts(prompt: str, cached_prompt: str) -> None:
+    verifier = LexicalCacheVerifier()
+    assert verifier.mismatch(prompt, cached_prompt) is None
+    assert verifier.mismatch(cached_prompt, prompt) is None
+
+
+def test_instrumented_verifier_counts_only_refusals() -> None:
+    metrics = GuardrailMetrics()
+    verifier = InstrumentedCacheHitVerifier(LexicalCacheVerifier(), metrics)
+    assert verifier.mismatch("Pay in 30 days.", "Pay in 30 days.") is None
+    assert verifier.mismatch("Pay in 30 days.", "Pay in 60 days.") == "numbers"
+    assert metrics.snapshot().cache_hits_rejected == 1
+
+
+async def test_cache_refuses_near_duplicate_with_different_terms(gw: httpx.AsyncClient) -> None:
+    prompt = CONTRACT + "The buyer shall pay each invoice within {} days of receipt."
+    flags = []
+    for days, ip in ((30, "203.0.113.80"), (60, "203.0.113.81"), (30, "203.0.113.82")):
+        response = await gw.post(
+            "/v1/inference", json={"prompt": prompt.format(days)}, headers=from_ip(ip)
+        )
+        assert response.status_code == 200
+        flags.append(InferenceResponse.model_validate_json(response.content).cached_hit)
+    assert flags == [False, False, True]
+    assert (await metrics_of(gw)).cache_hits_rejected == 1

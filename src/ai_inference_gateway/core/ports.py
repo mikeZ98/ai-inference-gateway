@@ -58,6 +58,14 @@ class SemanticCache(Protocol):
         ...
 
 
+class CacheHitVerifier(Protocol):
+    """Final, deterministic check on a hit that cleared the similarity threshold. Pure."""
+
+    def mismatch(self, prompt: str, cached_prompt: str) -> str | None:
+        """Return why ``cached_prompt``'s answer must not serve ``prompt``, or ``None``."""
+        ...
+
+
 class ComplexityAssessor(Protocol):
     """Scores prompt complexity. Pure and CPU-bound."""
 

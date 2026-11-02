@@ -19,3 +19,6 @@ class GuardrailMetricsSnapshot(StrictModel):
     routed_tier3: int = Field(ge=0)
     upstream_completions: int = Field(ge=0)
     tokens_consumed: int = Field(ge=0)
+    cache_hits_rejected: int = Field(
+        ge=0, description="Above-threshold cache hits refused by the lexical verifier."
+    )

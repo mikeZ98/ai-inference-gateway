@@ -26,7 +26,9 @@ from ai_inference_gateway.core import (
     estimate_tokens,
 )
 from ai_inference_gateway.core.ports import ProviderStreamEvent, StreamCompleted, TextDelta
+from ai_inference_gateway.guardrails import LexicalCacheVerifier
 from ai_inference_gateway.schemas import (
+    DEFAULT_SIMILARITY_THRESHOLD,
     CacheEntry,
     CacheQuery,
     ComplexityAssessment,
@@ -330,6 +332,7 @@ class Harness:
         self.engine = InferenceEngine(
             embedder=HashingEmbedder(),
             cache=self.cache,
+            hit_verifier=LexicalCacheVerifier(),
             assessor=HeuristicComplexityAssessor(),
             router=TierRouter(),
             dispatcher=self.dispatcher,
@@ -377,6 +380,60 @@ async def test_hit_requires_similarity_strictly_above_threshold(
     assert not (await h.engine.infer(simple_request)).cached_hit
 
 
+AGREEMENT = (
+    "Summarise the obligations in this supplier agreement for the finance team. The supplier "
+    "delivers the goods to the central warehouse, the buyer inspects them on arrival, and any "
+    "dispute is escalated to the joint steering committee before arbitration is considered. "
+)
+ALGEBRA = (
+    "Simplify the following expression step by step and explain each algebraic rule you apply "
+    "along the way, then verify the result by substituting z = 2: "
+)
+# Prompt pairs from the cache audit: near-identical text, different answers.
+AUDITED_FALSE_POSITIVES = [
+    pytest.param(
+        AGREEMENT + "The buyer shall pay each invoice within 30 days of receipt.",
+        AGREEMENT + "The buyer shall pay each invoice within 60 days of receipt.",
+        id="30-vs-60-days",
+    ),
+    pytest.param(
+        AGREEMENT + "The buyer shall pay the late delivery penalty.",
+        AGREEMENT + "The buyer shall not pay the late delivery penalty.",
+        id="shall-pay-vs-shall-not-pay",
+    ),
+    pytest.param(ALGEBRA + "(z^2 - 1) / (z+1)", ALGEBRA + "(z^2 - 1) / (z-1)", id="z+1-vs-z-1"),
+]
+
+
+@pytest.mark.parametrize(("cached_prompt", "prompt"), AUDITED_FALSE_POSITIVES)
+async def test_lexical_verifier_turns_audited_false_positives_into_misses(
+    h: Harness, cached_prompt: str, prompt: str
+) -> None:
+    embedder = HashingEmbedder()
+    similarity = cosine(await embedder.embed(cached_prompt), await embedder.embed(prompt))
+    # Similarity alone would serve the cached answer: the verifier is what refuses it.
+    assert similarity > DEFAULT_SIMILARITY_THRESHOLD
+
+    await h.engine.infer(InferenceRequest(prompt=cached_prompt))
+    assert not (await h.engine.infer(InferenceRequest(prompt=prompt))).cached_hit
+    assert len(h.dispatcher.calls) == 2
+    # Both prompts now have their own entry and keep hitting it.
+    assert (await h.engine.infer(InferenceRequest(prompt=cached_prompt))).cached_hit
+    assert (await h.engine.infer(InferenceRequest(prompt=prompt))).cached_hit
+    assert len(h.dispatcher.calls) == 2
+
+
+async def test_lexical_verifier_also_guards_streams(h: Harness) -> None:
+    await h.engine.infer(InferenceRequest(prompt=AGREEMENT + "Pay within 30 days."))
+    events = await collect(
+        h.engine.stream(InferenceRequest(prompt=AGREEMENT + "Pay within 60 days."))
+    )
+    summary = events[-1]
+    assert isinstance(summary, StreamSummary)
+    assert not summary.cached_hit
+    assert len(h.dispatcher.calls) == 2
+
+
 async def test_complex_prompt_routes_high(h: Harness, complex_request: InferenceRequest) -> None:
     result = await h.engine.infer(complex_request)
     assert result.provider is ModelProvider.ANTHROPIC
@@ -410,6 +467,7 @@ async def test_embedding_failure_fails_open(simple_request: InferenceRequest) ->
     engine = InferenceEngine(
         embedder=FailingEmbedder(),
         cache=cache,
+        hit_verifier=LexicalCacheVerifier(),
         assessor=HeuristicComplexityAssessor(),
         router=TierRouter(),
         dispatcher=dispatcher,
@@ -435,6 +493,7 @@ def test_threshold_validated_at_construction() -> None:
         InferenceEngine(
             embedder=HashingEmbedder(),
             cache=MemoryCache(),
+            hit_verifier=LexicalCacheVerifier(),
             assessor=HeuristicComplexityAssessor(),
             router=TierRouter(),
             dispatcher=FakeDispatcher(),

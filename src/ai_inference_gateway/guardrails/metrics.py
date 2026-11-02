@@ -1,8 +1,9 @@
 """In-process guardrail counters and instrumentation decorators.
 
-The decorators wrap the core ``Router`` / ``ProviderDispatcher`` ports, so the
-engine stays unaware of metrics. Counters are per process (one event loop, no
-locking needed); aggregate across workers at the scraper.
+The decorators wrap the core ``Router`` / ``ProviderDispatcher`` /
+``CacheHitVerifier`` ports, so the engine stays unaware of metrics. Counters are
+per process (one event loop, no locking needed); aggregate across workers at the
+scraper.
 """
 
 from collections import Counter
@@ -10,6 +11,7 @@ from collections.abc import AsyncGenerator
 from contextlib import aclosing
 
 from ai_inference_gateway.core.ports import (
+    CacheHitVerifier,
     ProviderCompletion,
     ProviderDispatcher,
     ProviderStreamEvent,
@@ -27,7 +29,7 @@ from ai_inference_gateway.schemas import (
 
 
 class GuardrailMetrics:
-    """Monotonic counters for rate limiting, routing decisions and token spend."""
+    """Monotonic counters for rate limiting, routing, token spend and cache-hit refusals."""
 
     def __init__(self) -> None:
         """Start all counters at zero."""
@@ -58,6 +60,10 @@ class GuardrailMetrics:
         self._counts["upstream_completions"] += 1
         self._counts["tokens_consumed"] += tokens_used
 
+    def record_cache_hit_rejected(self) -> None:
+        """Count a similar-enough cache hit that the verifier turned into a miss."""
+        self._counts["cache_hits_rejected"] += 1
+
     def snapshot(self) -> GuardrailMetricsSnapshot:
         """Immutable view of the current counters."""
         c = self._counts
@@ -73,6 +79,7 @@ class GuardrailMetrics:
             routed_tier3=c[f"routed_tier{RoutingTier.TIER_3.value}"],
             upstream_completions=c["upstream_completions"],
             tokens_consumed=c["tokens_consumed"],
+            cache_hits_rejected=c["cache_hits_rejected"],
         )
 
 
@@ -114,3 +121,19 @@ class InstrumentedDispatcher:
                 if isinstance(event, StreamCompleted):
                     self._metrics.record_completion(event.tokens_used)
                 yield event
+
+
+class InstrumentedCacheHitVerifier:
+    """``CacheHitVerifier`` decorator counting the hits it turns into misses."""
+
+    def __init__(self, inner: CacheHitVerifier, metrics: GuardrailMetrics) -> None:
+        """Wrap ``inner``."""
+        self._inner = inner
+        self._metrics = metrics
+
+    def mismatch(self, prompt: str, cached_prompt: str) -> str | None:
+        """Delegate and count refusals."""
+        reason = self._inner.mismatch(prompt, cached_prompt)
+        if reason is not None:
+            self._metrics.record_cache_hit_rejected()
+        return reason

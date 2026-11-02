@@ -1,7 +1,9 @@
-"""Ingress guardrails: Redis token bucket rate limiting, body limits, metrics."""
+"""Guardrails: rate limiting, body limits, lexical cache-hit verification, metrics."""
 
+from ai_inference_gateway.guardrails.lexical import LexicalCacheVerifier, LexicalMismatch
 from ai_inference_gateway.guardrails.metrics import (
     GuardrailMetrics,
+    InstrumentedCacheHitVerifier,
     InstrumentedDispatcher,
     InstrumentedRouter,
 )
@@ -20,8 +22,11 @@ from ai_inference_gateway.guardrails.rate_limiter import (
 __all__ = [
     "BodySizeLimitMiddleware",
     "GuardrailMetrics",
+    "InstrumentedCacheHitVerifier",
     "InstrumentedDispatcher",
     "InstrumentedRouter",
+    "LexicalCacheVerifier",
+    "LexicalMismatch",
     "RateLimitMiddleware",
     "RateLimitState",
     "RedisTokenBucketLimiter",

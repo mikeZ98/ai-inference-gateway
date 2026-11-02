@@ -29,8 +29,10 @@ from ai_inference_gateway.core.errors import CacheError
 from ai_inference_gateway.core.heuristics import HeuristicComplexityAssessor
 from ai_inference_gateway.guardrails import (
     BodySizeLimitMiddleware,
+    InstrumentedCacheHitVerifier,
     InstrumentedDispatcher,
     InstrumentedRouter,
+    LexicalCacheVerifier,
     RateLimitMiddleware,
     RateLimitState,
     RedisTokenBucketLimiter,
@@ -203,6 +205,7 @@ def create_app(
                 engine=InferenceEngine(
                     embedder=build_embedder(resolved, client),
                     cache=cache,
+                    hit_verifier=InstrumentedCacheHitVerifier(LexicalCacheVerifier(), metrics),
                     assessor=HeuristicComplexityAssessor(resolved.complexity_policy()),
                     router=InstrumentedRouter(build_router(resolved), metrics),
                     dispatcher=InstrumentedDispatcher(dispatcher, metrics),

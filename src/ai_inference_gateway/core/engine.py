@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from ai_inference_gateway.core.embedding import EmbeddingClient
 from ai_inference_gateway.core.errors import CacheError, EmbeddingError, ProviderError
 from ai_inference_gateway.core.ports import (
+    CacheHitVerifier,
     ComplexityAssessor,
     ProviderDispatcher,
     Router,
@@ -43,6 +44,10 @@ class InferenceEngine:
     and the request falls through to the provider (fail-open). Routing and
     provider failures propagate as ``RoutingError`` / ``ProviderError``.
 
+    A hit must clear the similarity threshold *and* the ``hit_verifier``: cosine
+    similarity cannot tell "within 30 days" from "within 60 days", so the
+    verifier re-checks the cached prompt lexically and can turn a hit into a miss.
+
     Requests with an explicit ``model`` override bypass the cache entirely, so
     a response produced by a different model is never served for them. Only
     complete responses are cached; an interrupted stream stores nothing.
@@ -53,6 +58,7 @@ class InferenceEngine:
         *,
         embedder: EmbeddingClient,
         cache: SemanticCache,
+        hit_verifier: CacheHitVerifier,
         assessor: ComplexityAssessor,
         router: Router,
         dispatcher: ProviderDispatcher,
@@ -65,6 +71,7 @@ class InferenceEngine:
         CacheQuery(embedding=(0.0,), similarity_threshold=similarity_threshold)
         self._embedder = embedder
         self._cache = cache
+        self._hit_verifier = hit_verifier
         self._assessor = assessor
         self._router = router
         self._dispatcher = dispatcher
@@ -76,7 +83,7 @@ class InferenceEngine:
         """Serve ``request`` from the semantic cache or an upstream provider."""
         started = self._timer()
         embedding = await self._embed(request)
-        hit = await self._lookup(embedding)
+        hit = await self._lookup(request.prompt, embedding)
         if hit is not None:
             return InferenceResponse(
                 content=hit.response,
@@ -110,7 +117,7 @@ class InferenceEngine:
         """
         started = self._timer()
         embedding = await self._embed(request)
-        hit = await self._lookup(embedding)
+        hit = await self._lookup(request.prompt, embedding)
         if hit is not None:
             if hit.response:
                 yield StreamDelta(content=hit.response)
@@ -180,7 +187,7 @@ class InferenceEngine:
             logger.warning("embedding failed; bypassing semantic cache", exc_info=True)
             return None
 
-    async def _lookup(self, embedding: Embedding | None) -> CacheEntry | None:
+    async def _lookup(self, prompt: str, embedding: Embedding | None) -> CacheEntry | None:
         if embedding is None:
             return None
         query = CacheQuery(embedding=embedding, similarity_threshold=self._similarity_threshold)
@@ -193,6 +200,13 @@ class InferenceEngine:
         if entry is None or entry.similarity_score is None:
             return None
         if not query.is_hit(entry.similarity_score):
+            return None
+        reason = self._hit_verifier.mismatch(prompt, entry.prompt)
+        if reason is not None:
+            logger.info(
+                "semantic cache hit rejected by verifier",
+                extra={"similarity": entry.similarity_score, "reason": reason},
+            )
             return None
         logger.info("semantic cache hit", extra={"similarity": entry.similarity_score})
         return entry

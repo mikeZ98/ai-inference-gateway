@@ -21,6 +21,7 @@ from ai_inference_gateway.core.heuristics import (
     estimate_tokens,
 )
 from ai_inference_gateway.core.ports import (
+    CacheHitVerifier,
     ComplexityAssessor,
     ProviderCompletion,
     ProviderDispatcher,
@@ -30,6 +31,7 @@ from ai_inference_gateway.core.ports import (
 
 __all__ = [
     "CacheError",
+    "CacheHitVerifier",
     "ComplexityAssessor",
     "ComplexityPolicy",
     "EmbeddingClient",
