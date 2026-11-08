@@ -1,5 +1,11 @@
 # ai-inference-gateway
 
+[![CI](https://github.com/mikeZ98/ai-inference-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/mikeZ98/ai-inference-gateway/actions/workflows/ci.yml)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue.svg)](pyproject.toml)
+[![Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](pyproject.toml)
+[![mypy strict](https://img.shields.io/badge/types-mypy%20strict-blue.svg)](pyproject.toml)
+[![Committer mikeZ98](https://img.shields.io/badge/committer-mikeZ98-lightgrey.svg)](https://github.com/mikeZ98/ai-inference-gateway/commits/main)
+
 An asynchronous FastAPI gateway that
 sits in front of LLM providers. It answers repeated questions from a **Qdrant
 semantic cache**, sends each new prompt to the **cheapest model tier that can
